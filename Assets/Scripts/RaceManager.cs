@@ -1,100 +1,82 @@
 using UnityEngine;
 using System.Collections.Generic;
-using System.Linq;
-
-public class RacerData
-{
-    public GameObject node;
-    public int currentLap;
-    public int lastWaypointIndex;
-}
 
 public class RaceManager : MonoBehaviour
 {
-    public ProceduralTrackGenerator trackGenerator;
-    public int totalLaps = 3;
-
-    private Dictionary<int, RacerData> racers = new Dictionary<int, RacerData>();
-    private int totalWaypoints = 0;
+    public PlayerController player { get; private set; }
+    public readonly List<AIController> rivals = new List<AIController>();
+    public readonly List<Projectile> projectiles = new List<Projectile>();
 
     void Start()
     {
-        Invoke("InitializeWaypoints", 0.5f);
+        EnsureRacers();
     }
 
-    private void InitializeWaypoints()
+    public void EnsureRacers()
     {
-        if (trackGenerator != null)
+        if (player == null)
         {
-            List<Transform> waypoints = trackGenerator.GetWaypoints();
-            totalWaypoints = waypoints.Count;
-            
-            for (int i = 0; i < waypoints.Count; i++)
+            player = FindObjectOfType<PlayerController>();
+            if (player == null) player = new GameObject("PlayerShip").AddComponent<PlayerController>();
+        }
+        while (rivals.Count < 3)
+        {
+            var ai = new GameObject("RivalShip_" + (rivals.Count + 1)).AddComponent<AIController>();
+            rivals.Add(ai);
+        }
+        ResetRace();
+    }
+
+    public void ResetRace()
+    {
+        foreach (var p in projectiles)
+            if (p != null) Destroy(p.gameObject);
+        projectiles.Clear();
+
+        if (player != null)
+        {
+            player.RebuildShipVisual();
+            player.ResetShip(0f, -2.5f);
+        }
+        float[] startDist = { 4f, 8f, 12f };
+        float[] startLat = { 2.5f, -2.5f, 2.5f };
+        for (int i = 0; i < rivals.Count; i++)
+            rivals[i].Init(i, startDist[i], startLat[i]);
+    }
+
+    void Update()
+    {
+        GameManager gm = FindObjectOfType<GameManager>();
+        if (gm != null && (gm.IsSelecting || gm.IsPaused)) return;
+        if (Time.timeScale == 0f) return;
+
+        float dt = Mathf.Min(Time.deltaTime, 0.05f);
+        foreach (var ai in rivals) ai.StepAI(dt);
+
+        for (int i = projectiles.Count - 1; i >= 0; i--)
+        {
+            if (projectiles[i] == null || !projectiles[i].StepProjectile(dt, this))
             {
-                Waypoint wp = waypoints[i].gameObject.GetComponent<Waypoint>();
-                if (wp == null) wp = waypoints[i].gameObject.AddComponent<Waypoint>();
-                wp.Init(i, this);
+                if (projectiles[i] != null) Destroy(projectiles[i].gameObject);
+                projectiles.RemoveAt(i);
             }
         }
     }
 
-    public void RegisterRacer(GameObject node)
+    public void FirePlayerPulse(float startS, float startLat)
     {
-        racers[node.GetInstanceID()] = new RacerData
-        {
-            node = node,
-            currentLap = 1,
-            lastWaypointIndex = -1
-        };
+        var obj = new GameObject("PulseMissile");
+        var proj = obj.AddComponent<Projectile>();
+        proj.InitPulse(startS + 3.5f, startLat);
+        projectiles.Add(proj);
     }
 
-    public void OnWaypointPassed(GameObject shipNode, int waypointIndex)
+    public int GetPlayerPlace()
     {
-        int id = shipNode.GetInstanceID();
-        if (!racers.ContainsKey(id)) return;
-
-        RacerData racer = racers[id];
-
-        if (waypointIndex > racer.lastWaypointIndex && waypointIndex <= racer.lastWaypointIndex + 2)
-        {
-            racer.lastWaypointIndex = waypointIndex;
-            
-            if (waypointIndex == totalWaypoints - 1)
-            {
-                racer.currentLap++;
-                racer.lastWaypointIndex = -1;
-                
-                if (shipNode.CompareTag("Player"))
-                {
-                    Debug.Log($"Player started Lap {racer.currentLap}!");
-                }
-
-                if (racer.currentLap > totalLaps)
-                {
-                    OnRaceFinished(shipNode);
-                }
-            }
-        }
-    }
-
-    private void OnRaceFinished(GameObject shipNode)
-    {
-        if (shipNode.CompareTag("Player"))
-        {
-            Debug.Log("Player finished the race!");
-        }
-        else
-        {
-            Debug.Log($"{shipNode.name} finished the race!");
-        }
-    }
-
-    public List<GameObject> GetPositions()
-    {
-        var sortedRacers = racers.Values.OrderByDescending(r => r.currentLap)
-                                        .ThenByDescending(r => r.lastWaypointIndex)
-                                        .ToList();
-
-        return sortedRacers.Select(r => r.node).ToList();
+        if (player == null) return 1;
+        int place = 1;
+        foreach (var ai in rivals)
+            if (ai.trackDistance > player.trackDistance) place++;
+        return place;
     }
 }

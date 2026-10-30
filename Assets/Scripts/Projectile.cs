@@ -1,67 +1,56 @@
 using UnityEngine;
+using System.Collections.Generic;
 
 public class Projectile : MonoBehaviour
 {
-    public float speed = 80.0f;
-    public int damage = 40;
-    public float lifetime = 5.0f;
+    public float trackDistance;
+    public float lateralOffset;
+    public float speed = 115f;
+    public float lifeTime = 2.8f;
 
-    private bool isMine = false;
-    private Transform target = null;
-    private Vector3 forwardDir = Vector3.forward;
-
-    void Start()
+    public void InitPulse(float startS, float startLat)
     {
-        Destroy(gameObject, lifetime);
+        trackDistance = startS;
+        lateralOffset = startLat;
+        var verts = new List<Vector3>();
+        var cols = new List<Color>();
+        var tris = new List<int>();
+        Color c = TurboArt.Hex(0xA855F7);
+        TurboArt.AddTri(verts, cols, tris, new Vector3(0, 0.2f, 1.4f), new Vector3(-0.45f, 0, -0.6f), new Vector3(0.45f, 0, -0.6f), c);
+        TurboArt.CreateMeshObject(transform, "PulseBolt", verts, cols, tris);
     }
 
-    public void InitAsMissile(Transform newTarget)
+    public bool StepProjectile(float dt, RaceManager rm)
     {
-        isMine = false;
-        target = newTarget;
-    }
+        lifeTime -= dt;
+        if (lifeTime <= 0f) return false;
+        trackDistance += speed * dt;
 
-    public void InitAsMine()
-    {
-        isMine = true;
-    }
-
-    void Update()
-    {
-        if (isMine) return;
-
-        Vector3 moveDir = transform.forward;
-
+        // Home toward closest rival ahead
+        AIController target = null;
+        float bestDelta = 90f;
+        foreach (var ai in rm.rivals)
+        {
+            float d = ai.trackDistance - trackDistance;
+            if (d > -2f && d < bestDelta)
+            {
+                bestDelta = d;
+                target = ai;
+            }
+        }
         if (target != null)
         {
-            moveDir = (target.position - transform.position).normalized;
-            transform.rotation = Quaternion.LookRotation(moveDir);
+            lateralOffset = Mathf.MoveTowards(lateralOffset, target.lateralOffset, 18f * dt);
+            if (Mathf.Abs(target.trackDistance - trackDistance) < 2.8f && Mathf.Abs(target.lateralOffset - lateralOffset) < 2.2f)
+            {
+                target.ApplyHit();
+                return false;
+            }
         }
 
-        transform.position += moveDir * speed * Time.deltaTime;
-    }
-
-    void OnTriggerEnter(Collider other)
-    {
-        bool hit = false;
-
-        PlayerController playerCtrl = other.GetComponent<PlayerController>();
-        if (playerCtrl != null)
-        {
-            playerCtrl.TakeDamage(damage);
-            hit = true;
-        }
-
-        AIController aiCtrl = other.GetComponent<AIController>();
-        if (aiCtrl != null)
-        {
-            aiCtrl.TakeDamage(damage);
-            hit = true;
-        }
-
-        if (hit)
-        {
-            Destroy(gameObject);
-        }
+        TrackSample s = TurboLevels.Current.Evaluate(trackDistance);
+        transform.position = s.Position + s.Right * lateralOffset + s.Up * 1.35f;
+        transform.rotation = Quaternion.LookRotation(s.Forward, s.Up);
+        return true;
     }
 }

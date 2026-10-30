@@ -1,139 +1,88 @@
 using UnityEngine;
-using System.Collections.Generic;
 
 public class AIController : MonoBehaviour
 {
-    public float hoverHeight = 2.0f;
-    public float hoverForce = 50.0f;
-    public float forwardSpeed = 28.0f;
-    public float turnSpeed = 8.0f;
-    public int maxShield = 100;
-    
-    public RaceManager raceManager;
+    public int rivalIndex;
+    public float hoverHeight = 1.35f;
+    public float forwardSpeed { get; private set; }
+    public float lateralOffset { get; private set; }
+    public float trackDistance { get; private set; }
+    public bool finished { get; private set; }
 
-    [HideInInspector]
-    public int currentShield = 100;
-    
-    private Rigidbody rb;
-    private float targetTurn = 0f;
-    private float currentTurn = 0f;
-    private WeaponSystem weaponSystem;
-    private List<Transform> waypoints = new List<Transform>();
-    private int currentWaypointIndex = 0;
+    float targetLane;
+    float baseSpeed;
+    float boostTimer;
+    float stunTimer;
+    Transform visualRoot;
 
-    void Start()
+    public void Init(int index, float startDist, float startLat)
     {
-        rb = GetComponent<Rigidbody>();
-        weaponSystem = GetComponent<WeaponSystem>();
-        currentShield = maxShield;
+        rivalIndex = index;
+        TurboShipSpec spec = TurboLevels.Ships[(index + 1) % TurboLevels.Ships.Length];
+        TurboArt.ClearGenerated(visualRoot);
+        visualRoot = TurboArt.CreateShipVisual(transform, spec);
 
-        Invoke("FetchWaypoints", 1.0f);
+        trackDistance = startDist;
+        lateralOffset = startLat;
+        targetLane = startLat;
+        forwardSpeed = 0f;
+        boostTimer = 0f;
+        stunTimer = 0f;
+        finished = false;
+        baseSpeed = 54f + index * 3.6f + TurboLevels.CurrentCircuitIndex * 1.8f;
+        SyncTransform();
     }
 
-    private void FetchWaypoints()
+    public void StepAI(float dt)
     {
-        if (raceManager != null && raceManager.trackGenerator != null)
+        if (finished) return;
+        TurboCircuit circuit = TurboLevels.Current;
+
+        if (stunTimer > 0f) stunTimer = Mathf.Max(0f, stunTimer - dt);
+        if (boostTimer > 0f) boostTimer = Mathf.Max(0f, boostTimer - dt);
+
+        float desiredSpeed = baseSpeed * (boostTimer > 0f ? 1.24f : 1f) * (stunTimer > 0f ? 0.55f : 1f);
+        forwardSpeed = Mathf.MoveTowards(forwardSpeed, desiredSpeed, 28f * dt);
+        trackDistance += forwardSpeed * dt;
+
+        // Periodically shift racing line toward upcoming boost pads
+        float wrapped = circuit.WrapDistance(trackDistance);
+        foreach (var pad in circuit.Pads)
         {
-            waypoints = raceManager.trackGenerator.GetWaypoints();
-        }
-    }
-
-    void FixedUpdate()
-    {
-        if (rb == null || currentShield <= 0) return;
-
-        Vector3 hitNormal = ApplyHoverPhysics();
-        CalculateWaypointTurn();
-        HandleWeapons();
-
-        // Align ship UP to surface normal
-        Vector3 targetUp = hitNormal;
-        Vector3 forward = transform.forward;
-        Vector3 right = Vector3.Cross(targetUp, forward).normalized;
-        Vector3 newForward = Vector3.Cross(right, targetUp).normalized;
-
-        Quaternion targetQuat = Quaternion.LookRotation(newForward, targetUp);
-        transform.rotation = Quaternion.Slerp(transform.rotation, targetQuat, Time.fixedDeltaTime * 5.0f);
-
-        // Movement
-        Vector3 forwardVel = transform.forward * forwardSpeed;
-        
-        currentTurn = Mathf.Lerp(currentTurn, targetTurn, Time.fixedDeltaTime * turnSpeed);
-        Vector3 turnVel = transform.right * (currentTurn * turnSpeed);
-
-        Vector3 currentVelocity = rb.velocity;
-        Vector3 localVelocity = forwardVel + turnVel;
-        
-        float verticalDot = Vector3.Dot(currentVelocity, targetUp);
-        Vector3 verticalVel = targetUp * verticalDot;
-        
-        rb.velocity = localVelocity + verticalVel;
-    }
-
-    private Vector3 ApplyHoverPhysics()
-    {
-        Vector3 rayStart = transform.position;
-        Vector3 downVector = -transform.up;
-        
-        if (Physics.Raycast(rayStart, downVector, out RaycastHit hit, hoverHeight * 3f))
-        {
-            if (hit.distance < hoverHeight)
+            float distAhead = pad.Distance - wrapped;
+            if (distAhead > 4f && distAhead < 32f && !pad.IsWeapon)
             {
-                float forceMagnitude = (hoverHeight - hit.distance) * hoverForce;
-                rb.AddForce(hit.normal * forceMagnitude, ForceMode.Acceleration);
+                targetLane = pad.LateralOffset;
+                break;
             }
-            return hit.normal;
-        }
-        return Vector3.up;
-    }
-
-    private void CalculateWaypointTurn()
-    {
-        if (waypoints.Count == 0) return;
-
-        if (currentWaypointIndex >= waypoints.Count)
-        {
-            currentWaypointIndex = 0;
-        }
-
-        Transform targetWaypoint = waypoints[currentWaypointIndex];
-        
-        float dist = Vector3.Distance(transform.position, targetWaypoint.position);
-        if (dist < 20.0f)
-        {
-            currentWaypointIndex++;
-            if (currentWaypointIndex >= waypoints.Count)
+            if (Mathf.Abs(distAhead) < 2.6f && Mathf.Abs(lateralOffset - pad.LateralOffset) < 2.2f && !pad.IsWeapon)
             {
-                currentWaypointIndex = 0;
+                boostTimer = 1.15f;
             }
         }
 
-        Vector3 targetPos = waypoints[currentWaypointIndex].position;
-        Vector3 localTarget = (targetPos - transform.position).normalized;
-        float rightDot = Vector3.Dot(localTarget, transform.right);
-        
-        targetTurn = Mathf.Clamp(rightDot * 2.0f, -1f, 1f);
+        float steerDelta = targetLane - lateralOffset;
+        lateralOffset += Mathf.Clamp(steerDelta * 2.5f, -9f, 9f) * dt;
+        float maxLat = circuit.TrackWidth * 0.5f - 1.4f;
+        lateralOffset = Mathf.Clamp(lateralOffset, -maxLat, maxLat);
+
+        if (trackDistance >= circuit.TotalLength * circuit.Laps)
+            finished = true;
+
+        SyncTransform();
     }
 
-    private void HandleWeapons()
+    public void ApplyHit()
     {
-        if (weaponSystem != null)
-        {
-            if (Random.value < 0.005f)
-            {
-                weaponSystem.DropMine();
-            }
-        }
+        stunTimer = 1.4f;
+        forwardSpeed *= 0.55f;
     }
 
-    public void TakeDamage(int amount)
+    void SyncTransform()
     {
-        currentShield -= amount;
-        if (currentShield <= 0)
-        {
-            currentShield = 0;
-            Debug.Log("AI Ship destroyed!");
-            Destroy(gameObject);
-        }
+        TurboCircuit circuit = TurboLevels.Current;
+        TrackSample sample = circuit.Evaluate(trackDistance);
+        transform.position = sample.Position + sample.Right * lateralOffset + sample.Up * hoverHeight;
+        transform.rotation = Quaternion.LookRotation(sample.Forward, sample.Up);
     }
 }

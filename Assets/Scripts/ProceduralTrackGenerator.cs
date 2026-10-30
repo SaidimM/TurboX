@@ -1,105 +1,106 @@
 using UnityEngine;
 using System.Collections.Generic;
 
-[RequireComponent(typeof(MeshFilter), typeof(MeshRenderer), typeof(MeshCollider))]
 public class ProceduralTrackGenerator : MonoBehaviour
 {
     public GameObject waypointPrefab;
-    public float trackRadius = 20.0f;
-    public int segments = 100;
-    public int sides = 16;
-    
-    private List<Transform> waypoints = new List<Transform>();
+    Transform artwork;
+    readonly List<Transform> waypoints = new List<Transform>();
 
-    void Start()
-    {
-        GenerateTrack();
-    }
+    void Start() { Rebuild(); }
 
-    private void GenerateTrack()
+    public void Rebuild()
     {
-        List<Vector3> splinePoints = new List<Vector3>();
-        for (int i = 0; i <= segments; i++)
+        TurboArt.ClearGenerated(artwork);
+        waypoints.Clear();
+        artwork = new GameObject("CircuitArtwork").transform;
+        artwork.SetParent(transform, false);
+
+        TurboCircuit circuit = TurboLevels.Current;
+        int steps = 220;
+        float halfW = circuit.TrackWidth * 0.5f;
+        float curbW = 0.75f;
+        float curbH = 0.65f;
+        float deckThickness = 0.85f;
+
+        var verts = new List<Vector3>();
+        var cols = new List<Color>();
+        var tris = new List<int>();
+
+        Color roadCenter = TurboArt.Hex(circuit.RoadSurface);
+        Color roadEdge = TurboArt.Hex(circuit.RoadEdge);
+        Color curbGlow = TurboArt.Hex(circuit.CurbGlow);
+        Color underbelly = TurboArt.Ink;
+
+        for (int i = 0; i < steps; i++)
         {
-            float t = (float)i / segments;
-            float z = t * 1000f; // Unity is left-handed, +Z is forward
-            float y = Mathf.Sin(t * Mathf.PI * 4f) * 50f;
-            float x = Mathf.Cos(t * Mathf.PI * 2f) * 50f;
-            
-            splinePoints.Add(new Vector3(x, y, z));
+            float s0 = (i / (float)steps) * circuit.TotalLength;
+            float s1 = ((i + 1) / (float)steps) * circuit.TotalLength;
+            TrackSample a = circuit.Evaluate(s0);
+            TrackSample b = circuit.Evaluate(s1);
+
+            Vector3 aL = a.Position - a.Right * halfW;
+            Vector3 aC = a.Position;
+            Vector3 aR = a.Position + a.Right * halfW;
+            Vector3 bL = b.Position - b.Right * halfW;
+            Vector3 bC = b.Position;
+            Vector3 bR = b.Position + b.Right * halfW;
+
+            // Main ribbon surface (2 halves for center racing line contrast)
+            Color stripeCol = (i % 4 == 0) ? Color.Lerp(roadCenter, curbGlow, 0.35f) : roadCenter;
+            TurboArt.AddQuad(verts, cols, tris, aL, aC, bC, bL, roadEdge, stripeCol, stripeCol, roadEdge);
+            TurboArt.AddQuad(verts, cols, tris, aC, aR, bR, bC, stripeCol, roadEdge, roadEdge, stripeCol);
+
+            // Raised neon left & right curbs
+            Color curbCol = (i % 2 == 0) ? curbGlow : roadEdge;
+            Vector3 aCurbTopL = aL + a.Up * curbH;
+            Vector3 bCurbTopL = bL + b.Up * curbH;
+            Vector3 aCurbOutL = aCurbTopL - a.Right * curbW;
+            Vector3 bCurbOutL = bCurbTopL - b.Right * curbW;
+            TurboArt.AddQuad(verts, cols, tris, aL, aCurbTopL, bCurbTopL, bL, curbCol, curbCol, curbCol, curbCol);
+            TurboArt.AddQuad(verts, cols, tris, aCurbTopL, aCurbOutL, bCurbOutL, bCurbTopL, curbCol, underbelly, underbelly, curbCol);
+
+            Vector3 aCurbTopR = aR + a.Up * curbH;
+            Vector3 bCurbTopR = bR + b.Up * curbH;
+            Vector3 aCurbOutR = aCurbTopR + a.Right * curbW;
+            Vector3 bCurbOutR = bCurbTopR + b.Right * curbW;
+            TurboArt.AddQuad(verts, cols, tris, aR, bR, bCurbTopR, aCurbTopR, curbCol, curbCol, curbCol, curbCol);
+            TurboArt.AddQuad(verts, cols, tris, aCurbTopR, bCurbTopR, bCurbOutR, aCurbOutR, curbCol, curbCol, underbelly, underbelly);
+
+            // Track underside skirt
+            Vector3 aBotL = aL - a.Up * deckThickness;
+            Vector3 bBotL = bL - b.Up * deckThickness;
+            Vector3 aBotR = aR - a.Up * deckThickness;
+            Vector3 bBotR = bR - b.Up * deckThickness;
+            TurboArt.AddQuad(verts, cols, tris, aBotL, bBotL, bBotR, aBotR, underbelly, underbelly, underbelly, underbelly);
+
+            // Start/Finish overhead gantry at s = 0
+            if (i == 0)
+            {
+                Vector3 gTL = aL + a.Up * 6.5f;
+                Vector3 gTR = aR + a.Up * 6.5f;
+                Vector3 gBL = bL + b.Up * 5.6f;
+                Vector3 gBR = bR + b.Up * 5.6f;
+                TurboArt.AddQuad(verts, cols, tris, aL, gTL, bL + b.Up * 6.5f, bL, curbGlow, curbGlow, underbelly, underbelly);
+                TurboArt.AddQuad(verts, cols, tris, aR, bR, bR + b.Up * 6.5f, gTR, curbGlow, underbelly, underbelly, curbGlow);
+                TurboArt.AddQuad(verts, cols, tris, gTL, gTR, gBR, gBL, TurboArt.Cream, TurboArt.Cream, TurboArt.Accent, TurboArt.Accent);
+            }
         }
 
-        List<Vector3> vertices = new List<Vector3>();
-        List<Vector3> normals = new List<Vector3>();
-        List<Vector2> uvs = new List<Vector2>();
-        List<int> triangles = new List<int>();
-
-        for (int i = 0; i < segments; i++)
+        // Speed Boost Pads & Weapon Pads
+        foreach (var pad in circuit.Pads)
         {
-            Vector3 p0 = splinePoints[i];
-            Vector3 p1 = splinePoints[i + 1];
-
-            Vector3 forward = (p1 - p0).normalized;
-            Vector3 arbitrary = Vector3.up;
-            if (Mathf.Abs(forward.y) > 0.99f) arbitrary = Vector3.right;
-
-            Vector3 right = Vector3.Cross(arbitrary, forward).normalized;
-            Vector3 up = Vector3.Cross(forward, right).normalized;
-
-            for (int j = 0; j <= sides; j++)
-            {
-                float angle = ((float)j / sides) * Mathf.PI * 2f;
-                float cosA = Mathf.Cos(angle);
-                float sinA = Mathf.Sin(angle);
-
-                Vector3 offset = (right * cosA * trackRadius) + (up * sinA * trackRadius);
-                Vector3 vertPos = p0 + offset;
-                
-                // Track is inside the tube, so normal points towards the center (negative offset)
-                Vector3 normal = -offset.normalized;
-
-                vertices.Add(vertPos);
-                normals.Add(normal);
-                uvs.Add(new Vector2((float)j / sides, (float)i / segments));
-            }
-
-            if (i < segments - 1)
-            {
-                int row1 = i * (sides + 1);
-                int row2 = (i + 1) * (sides + 1);
-
-                for (int j = 0; j < sides; j++)
-                {
-                    triangles.Add(row1 + j);
-                    triangles.Add(row2 + j);
-                    triangles.Add(row1 + j + 1);
-
-                    triangles.Add(row1 + j + 1);
-                    triangles.Add(row2 + j);
-                    triangles.Add(row2 + j + 1);
-                }
-            }
-
-            // Spawn Waypoints
-            if (waypointPrefab != null && i % 5 == 0)
-            {
-                GameObject wpObj = Instantiate(waypointPrefab, p0, Quaternion.LookRotation(forward, up), transform);
-                waypoints.Add(wpObj.transform);
-            }
+            TrackSample s0 = circuit.Evaluate(pad.Distance - 2.2f);
+            TrackSample s1 = circuit.Evaluate(pad.Distance + 2.2f);
+            Vector3 p0L = s0.Position + s0.Right * (pad.LateralOffset - 1.35f) + s0.Up * 0.08f;
+            Vector3 p0R = s0.Position + s0.Right * (pad.LateralOffset + 1.35f) + s0.Up * 0.08f;
+            Vector3 p1C = s1.Position + s1.Right * pad.LateralOffset + s1.Up * 0.08f;
+            Color padColor = pad.IsWeapon ? TurboArt.Hex(0xA855F7) : TurboArt.Hex(0x38BDF8);
+            TurboArt.AddTri(verts, cols, tris, p0L, p1C, p0R, padColor);
         }
 
-        Mesh mesh = new Mesh();
-        mesh.vertices = vertices.ToArray();
-        mesh.normals = normals.ToArray();
-        mesh.uv = uvs.ToArray();
-        mesh.triangles = triangles.ToArray();
-
-        GetComponent<MeshFilter>().mesh = mesh;
-        GetComponent<MeshCollider>().sharedMesh = mesh; // Collision for the tube
+        TurboArt.CreateMeshObject(artwork, "RibbonTrackMesh", verts, cols, tris);
     }
 
-    public List<Transform> GetWaypoints()
-    {
-        return waypoints;
-    }
+    public List<Transform> GetWaypoints() => waypoints;
 }
