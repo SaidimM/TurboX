@@ -17,6 +17,14 @@ public class PlayerController : MonoBehaviour
 
     [HideInInspector] public bool touchLeft, touchRight, touchBoost, touchFire, touchBrake;
 
+    // Drop & Respawn mechanics
+    public bool isFalling { get; private set; }
+    float fallTimer;
+    float fallAltitude;
+    float fallLateral;
+    float fallDistance;
+    public float respawnTimer { get; private set; }
+
     Transform visualRoot;
     float visualRoll;
     float visualPitch;
@@ -51,6 +59,12 @@ public class PlayerController : MonoBehaviour
         finished = false;
         lastPadIndex = -1;
         touchLeft = touchRight = touchBoost = touchFire = touchBrake = false;
+        isFalling = false;
+        fallTimer = 0f;
+        fallAltitude = 0f;
+        fallLateral = 0f;
+        fallDistance = 0f;
+        respawnTimer = 0f;
         SyncTransform(0.016f);
     }
 
@@ -83,6 +97,33 @@ public class PlayerController : MonoBehaviour
         TurboCircuit circuit = TurboLevels.Current;
         TurboShipSpec spec = TurboLevels.CurrentShip;
 
+        if (respawnTimer > 0f) respawnTimer = Mathf.Max(0f, respawnTimer - dt);
+
+        if (isFalling)
+        {
+            fallTimer += dt;
+            fallAltitude -= 34f * dt;
+            lateralOffset += fallLateral * dt;
+            visualPitch = Mathf.Lerp(visualPitch, 55f, 1f - Mathf.Exp(-6f * dt));
+            visualRoll += (fallLateral > 0f ? 240f : -240f) * dt;
+
+            if (fallTimer > 1.25f)
+            {
+                isFalling = false;
+                fallTimer = 0f;
+                fallAltitude = 0f;
+                forwardSpeed = 0f;
+                lateralVelocity = 0f;
+                float dropSide = Mathf.Sign(lateralOffset);
+                lateralOffset = dropSide * (circuit.TrackWidth * 0.5f - 2.0f);
+                trackDistance = fallDistance;
+                visualRoll = 0f;
+                visualPitch = 0f;
+                respawnTimer = 1.0f;
+            }
+            return;
+        }
+
         if (boostTimer > 0f) boostTimer = Mathf.Max(0f, boostTimer - dt);
 
         bool boosting = boostTimer > 0f;
@@ -99,8 +140,19 @@ public class PlayerController : MonoBehaviour
         float topSpeed = spec.MaxSpeed * (boosting ? 1.34f : 1f);
         if (currentShield <= 0f) topSpeed *= 0.72f;
 
+        // Road border speed resistance
+        float halfTrack = circuit.TrackWidth * 0.5f;
+        float roadEdgeZone = halfTrack - 1.8f;
+        float absLat = Mathf.Abs(lateralOffset);
+        float borderResistance = 1f;
+        if (absLat > roadEdgeZone)
+        {
+            float edgeDepth = Mathf.Clamp01((absLat - roadEdgeZone) / 1.8f);
+            borderResistance = 1f - edgeDepth * 0.42f;
+        }
+
         if (gas)
-            forwardSpeed = Mathf.MoveTowards(forwardSpeed, topSpeed, spec.Accel * (boosting ? 1.6f : 1f) * dt);
+            forwardSpeed = Mathf.MoveTowards(forwardSpeed, topSpeed * borderResistance, spec.Accel * (boosting ? 1.6f : 1f) * dt);
         else if (brake)
             forwardSpeed = Mathf.MoveTowards(forwardSpeed, 0f, spec.Accel * 1.8f * dt);
         else
@@ -110,13 +162,25 @@ public class PlayerController : MonoBehaviour
         lateralVelocity = Mathf.Lerp(lateralVelocity, targetLatVel, 1f - Mathf.Exp(-10f * dt));
         lateralOffset += lateralVelocity * dt;
 
-        float maxLat = circuit.TrackWidth * 0.5f - 1.25f;
-        if (Mathf.Abs(lateralOffset) > maxLat)
+        // Space Drop detection: plane falls into space if lateral distance exceeds road by > 1.6m
+        float fallBoundary = halfTrack + 1.6f;
+        if (Mathf.Abs(lateralOffset) > fallBoundary)
         {
-            lateralOffset = Mathf.Sign(lateralOffset) * maxLat;
-            lateralVelocity = -lateralVelocity * 0.45f;
-            forwardSpeed *= 0.92f;
-            currentShield = Mathf.Max(0f, currentShield - 12f * dt);
+            isFalling = true;
+            fallTimer = 0f;
+            fallAltitude = 0f;
+            fallLateral = lateralVelocity != 0f ? lateralVelocity : Mathf.Sign(lateralOffset) * 6f;
+            fallDistance = trackDistance;
+            currentShield = Mathf.Max(0f, currentShield - 25f);
+            forwardSpeed *= 0.2f;
+            return;
+        }
+
+        // Curb friction / scrape
+        if (absLat > halfTrack - 0.75f)
+        {
+            currentShield = Mathf.Max(0f, currentShield - 14f * dt);
+            forwardSpeed = Mathf.Max(0f, forwardSpeed - 18f * dt);
         }
 
         trackDistance += forwardSpeed * dt;
@@ -171,10 +235,16 @@ public class PlayerController : MonoBehaviour
     {
         TurboCircuit circuit = TurboLevels.Current;
         TrackSample sample = circuit.Evaluate(trackDistance);
-        float hoverBob = Mathf.Sin(Time.time * 6f) * 0.08f;
-        transform.position = sample.Position + sample.Right * lateralOffset + sample.Up * (hoverHeight + hoverBob);
+        float hoverBob = isFalling ? 0f : Mathf.Sin(Time.time * 6f) * 0.08f;
+        transform.position = sample.Position + sample.Right * lateralOffset + sample.Up * (hoverHeight + hoverBob + fallAltitude);
         Quaternion frameRot = Quaternion.LookRotation(sample.Forward, sample.Up);
         transform.rotation = frameRot * Quaternion.Euler(visualPitch, 0f, visualRoll);
+
+        if (visualRoot != null)
+        {
+            bool visible = !(respawnTimer > 0f && (Mathf.FloorToInt(Time.time * 15f) % 2 == 0));
+            visualRoot.gameObject.SetActive(visible);
+        }
     }
 
     void UpdateCamera(float dt)
@@ -185,8 +255,8 @@ public class PlayerController : MonoBehaviour
         TrackSample behind = circuit.Evaluate(trackDistance - 7.8f);
         TrackSample ahead = circuit.Evaluate(trackDistance + 14f);
 
-        Vector3 targetPos = behind.Position + behind.Right * (lateralOffset * 0.65f) + behind.Up * 3.7f;
-        Vector3 lookTarget = ahead.Position + ahead.Right * (lateralOffset * 0.45f) + ahead.Up * 1.1f;
+        Vector3 targetPos = behind.Position + behind.Right * (lateralOffset * 0.65f) + behind.Up * (3.7f + fallAltitude * 0.45f);
+        Vector3 lookTarget = ahead.Position + ahead.Right * (lateralOffset * 0.45f) + ahead.Up * (1.1f + fallAltitude * 0.25f);
 
         cam.transform.position = Vector3.Lerp(cam.transform.position, targetPos, 1f - Mathf.Exp(-14f * dt));
         Quaternion targetRot = Quaternion.LookRotation((lookTarget - cam.transform.position).normalized, behind.Up);
